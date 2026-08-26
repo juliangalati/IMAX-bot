@@ -1,0 +1,51 @@
+name: Monitor IMAX Norcenter cartelera
+
+on:
+  schedule:
+    # Every 5 minutes (GitHub's minimum). Note: scheduled runs are best-effort
+    # and are often delayed 5-15+ min under load.
+    - cron: '*/5 * * * *'
+  workflow_dispatch: {}   # allow manual runs from the Actions tab
+
+permissions:
+  contents: write          # needed to commit the state file back
+
+concurrency:
+  group: monitor           # serialize runs so state pushes never race
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run monitor
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          chmod +x monitor.sh
+          set +e
+          ./monitor.sh
+          code=$?
+          echo "monitor exit code: $code"
+          # exit 2 = fetch/parse failure; the script already alerts via Telegram
+          # (with its own throttling), so don't mark the whole job as failed.
+          if [ "$code" -ne 0 ] && [ "$code" -ne 2 ]; then
+            exit "$code"
+          fi
+
+      - name: Persist state
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # state/ is gitignored, so force-add. Includes known_movies.tsv AND the
+          # .failcount file that drives failure-alert throttling across runs.
+          git add -f state/ 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "no state changes to commit"
+          else
+            git commit -m "chore: update monitor state [skip ci]"
+            git push
+          fi
